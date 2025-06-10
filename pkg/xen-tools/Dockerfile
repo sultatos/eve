@@ -135,6 +135,7 @@ RUN mv /var /var.template && ln -s /run /var && ln -s /run /var.template/run
 
 # Add a few mountpoints so we can use lowerfs in R/O mode
 RUN mkdir /persist /hostfs
-
+COPY print-xen-consoleIds /bin/print-xen-consoleIds
+RUN chmod +x /bin/print-xen-consoleIds
 ENTRYPOINT []
 CMD ["/init.sh"]

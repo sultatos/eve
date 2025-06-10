@@ -131,6 +131,44 @@ is_in_debug_service() {
     grep -q '/eve/services/debug' < /proc/self/cgroup
 }
 
+is_in_xen_tools_service() {
+    grep -q '/eve/services/xen-tools' < /proc/self/cgroup
+}
+run_in_kvm(){
+  if ! is_in_debug_service; then
+      # List can be executed only in debug service container
+      # due to missing convenient GNU tools
+      eve enter debug "eve $1"
+      exit
+  fi
+  printf "PID\tAPP-UUID\t\t\t\tCONS-TYPE\tCONS-ID\n"
+  # shellcheck disable=SC3045
+  printf "---\t--------\t\t\t\t---------\t---------\n"
+  for pid in $(pgrep qemu-system); do
+      # shellcheck disable=SC2009
+      name=$(ps -p "$pid" --no-headers -o command | grep -o '\-name\s\+[^ ]\+' | awk '{print $2}')
+      # shellcheck disable=SC2009
+      uuid=$(ps -p "$pid" --no-headers -o command | grep -o '\-uuid\s\+[^ ]\+' | awk '{print $2}')
+      dir="$KVM_RUN_DIR/$name"
+      if [ -e "$dir/shim-cons" ]; then
+          printf "%s\t%s\tCONTAINER\t%s/cons\n" "$pid" "$uuid" "$name"
+          printf "%s\t%s\tVM\t\t%s/shim-cons\n" "$pid" "$uuid" "$name"
+      else
+          printf "%s\t%s\tVM\t\t%s/cons\n" "$pid" "$uuid" "$name"
+      fi
+  done
+}
+
+
+run_in_xen_tools(){
+    if ! is_in_xen_tools_service; then
+        # List can be executed only in xen-tools service container
+        # due to missing convenient xen tools
+        eve enter xen-tools "print-xen-consoleIds"
+        exit
+    fi
+}
+
 case "$1" in
     exec) NO_FORK="-F"
           if [ "$2" = "--fork" ]; then
@@ -146,28 +184,13 @@ case "$1" in
           exec nsenter ${NO_FORK} -a -t "${ID:-1}" "$CMD" "$@"
           ;;
     list-app-consoles)
-          if ! is_in_debug_service; then
-              # List can be executed only in debug service container
-              # due to missing convenient GNU tools
-              eve enter debug "eve $1"
-              exit
+          # check hypervisor from /run/eve-hv-type and if kvm execute run_in_kvm
+          if [ "$(cat /run/eve-hv-type)" = "kvm" ]; then
+              run_in_kvm list-app-consoles
+          # if not kvm, then use ctr to list app consoles
+          elif [ "$(cat /run/eve-hv-type)" = "xen" ]; then
+              run_in_xen_tools list-app-consoles
           fi
-          printf "PID\tAPP-UUID\t\t\t\tCONS-TYPE\tCONS-ID\n"
-          # shellcheck disable=SC3045
-          printf "---\t--------\t\t\t\t---------\t---------\n"
-          for pid in $(pgrep qemu-system); do
-              # shellcheck disable=SC2009
-              name=$(ps -p "$pid" --no-headers -o command | grep -o '\-name\s\+[^ ]\+' | awk '{print $2}')
-              # shellcheck disable=SC2009
-              uuid=$(ps -p "$pid" --no-headers -o command | grep -o '\-uuid\s\+[^ ]\+' | awk '{print $2}')
-              dir="$KVM_RUN_DIR/$name"
-              if [ -e "$dir/shim-cons" ]; then
-                  printf "%s\t%s\tCONTAINER\t%s/cons\n" "$pid" "$uuid" "$name"
-                  printf "%s\t%s\tVM\t\t%s/shim-cons\n" "$pid" "$uuid" "$name"
-              else
-                  printf "%s\t%s\tVM\t\t%s/cons\n" "$pid" "$uuid" "$name"
-              fi
-          done
           ;;
     attach-app-console) [ -z "$2" ] && help
           if ! is_in_debug_service; then

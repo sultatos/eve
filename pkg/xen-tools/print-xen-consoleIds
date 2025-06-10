@@ -1,0 +1,62 @@
+#!/bin/sh
+printf "DOMID\tAPP-UUID\t\t\t\tCONS-TYPE\tCONS-ID\n"
+# shellcheck disable=SC3045
+printf "-----\t--------\t\t\t\t---------\t---------\n"
+
+XEN_RUN_DIR="/run/tasks"
+
+# In EVE, use xl list to get domain information
+# Skip the header line and Domain-0
+xl list | tail -n +2 | while IFS= read -r line; do
+    # Parse xl list output: Name ID Mem VCPUs State Time(s)
+    name=$(echo "$line" | awk '{print $1}')
+    domid=$(echo "$line" | awk '{print $2}')
+    
+    # Skip Domain-0 (dom0)
+    if [ "$name" = "Domain-0" ]; then
+        continue
+    fi
+    
+    # Get UUID from Xen domain configuration
+    # In EVE, UUIDs are typically stored in xenstore
+    uuid=""
+    if [ -n "$domid" ] && [ "$domid" -ge 1 ]; then
+        # Try to get UUID from xenstore
+        uuid=$(xenstore-read "/local/domain/$domid/vm" 2>/dev/null | sed 's|.*/||' 2>/dev/null)
+        if [ -z "$uuid" ]; then
+            # Fallback: try xl list -l for detailed info
+            uuid=$(xl list -l "$domid" 2>/dev/null | grep -o '"uuid"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+        fi
+    fi
+    
+    # Use domain name as fallback if UUID not found
+    if [ -z "$uuid" ]; then
+        uuid="$name"
+    fi
+    
+    # EVE-specific console paths
+    # Check for EVE application console structure
+    eve_app_console="$XEN_RUN_DIR/$name/cons"
+    eve_shim_console="$XEN_RUN_DIR/$name/shim-cons"
+    
+    # Standard Xen console paths
+    xen_console="/var/run/xen/console/tty$domid"
+    
+    # Check console availability and type
+    if [ -e "$eve_shim_console" ]; then
+        printf "%s\t%s\tCONTAINER\t%s/cons\n" "$domid" "$uuid" "$name"
+        printf "%s\t%s\tVM\t\t%s/shim-cons\n" "$domid" "$uuid" "$name"
+    elif [ -e "$eve_app_console" ]; then
+        printf "%s\t%s\tVM\t\t%s/cons\n" "$domid" "$uuid" "$name"
+    elif [ -e "$xen_console" ]; then
+        printf "%s\t%s\tVM\t\ttty%s\n" "$domid" "$uuid" "$domid"
+    else
+        # Check if domain has a console via xenstore
+        console_type=$(xenstore-read "/local/domain/$domid/console/type" 2>/dev/null || echo "")
+        if [ -n "$console_type" ]; then
+            printf "%s\t%s\tVM\t\txl-console\n" "$domid" "$uuid"
+        else
+            printf "%s\t%s\tVM\t\t(no console)\n" "$domid" "$uuid"
+        fi
+    fi
+done
