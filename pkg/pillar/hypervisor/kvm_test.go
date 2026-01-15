@@ -325,6 +325,7 @@ func TestCreateDomConfigOnlyCom1(t *testing.T) {
   script = "/etc/xen/scripts/qemu-ifup"
   downscript = "no"
   vhost = "on"
+  queues = "2"
 
 [device "net0"]
   driver = "virtio-net-pci"
@@ -332,6 +333,8 @@ func TestCreateDomConfigOnlyCom1(t *testing.T) {
   mac = "6a:00:03:61:a6:90"
   bus = "pci.7"
   addr = "0x0"
+  mq = "on"
+  vectors = "6"
 
 [device "pci.8"]
   driver = "pcie-root-port"
@@ -348,6 +351,7 @@ func TestCreateDomConfigOnlyCom1(t *testing.T) {
   script = "/etc/xen/scripts/qemu-ifup"
   downscript = "no"
   vhost = "on"
+  queues = "2"
 
 [device "net1"]
   driver = "virtio-net-pci"
@@ -355,6 +359,8 @@ func TestCreateDomConfigOnlyCom1(t *testing.T) {
   mac = "6a:00:03:61:a6:91"
   bus = "pci.8"
   addr = "0x0"
+  mq = "on"
+  vectors = "6"
 
 [chardev "charserial-usr0"]
   backend = "serial"
@@ -465,6 +471,7 @@ func TestCreateDomConfigOnlyCom1(t *testing.T) {
 
 [memory]
   size = "10240"
+  hugepages = "on"
 
 [smp-opts]
   cpus = "2"
@@ -717,6 +724,7 @@ func TestCreateDomConfigOnlyCom1(t *testing.T) {
 
 [memory]
   size = "10240"
+  hugepages = "on"
 
 [smp-opts]
   cpus = "2"
@@ -919,117 +927,189 @@ func TestCreateDomConfigOnlyCom1(t *testing.T) {
 func TestCreateDomConfigAmd64(t *testing.T) {
 	t.Parallel()
 
-	conf, err := os.CreateTemp("/tmp", "config")
-	if err != nil {
-		t.Errorf("Can't create config file for a domain %v", err)
-	}
-	defer os.Remove(conf.Name())
-
-	diskConfigs, diskStatuses := qemuDisks()
-	config, aa := domainConfigAndAssignableAdapters(diskConfigs)
-	if err := kvmIntel.CreateDomConfig(DefaultDomainName, config, types.DomainStatus{},
-		diskStatuses, &aa, nil, swtpmCtrlSock, conf); err != nil {
-		t.Errorf("CreateDomConfig failed %v", err)
-	}
-	defer os.Truncate(conf.Name(), 0)
-
-	result, err := os.ReadFile(conf.Name())
-	if err != nil {
-		t.Errorf("reading conf file failed %v", err)
+	tests := []struct {
+		name      string
+		hugepages bool
+		expected  string
+	}{
+		{"with hugepages", true, domConfigAmd64(true)},
+		{"without hugepages", false, domConfigAmd64(false)},
 	}
 
-	result = setStaticVsockCid(result)
-	if string(result) != domConfigAmd64() {
-		t.Errorf("got an unexpected resulting config %s", string(result))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			conf, err := os.CreateTemp("/tmp", "config")
+			if err != nil {
+				t.Errorf("Can't create config file for a domain %v", err)
+			}
+			defer os.Remove(conf.Name())
+
+			diskConfigs, diskStatuses := qemuDisks()
+			config, aa := domainConfigAndAssignableAdapters(diskConfigs)
+
+			// Create a local KvmContext with the desired hugepages setting
+			localKvm := kvmIntel
+			localKvm.hugePagesAvailable = tt.hugepages
+
+			if err := localKvm.CreateDomConfig(DefaultDomainName, config, types.DomainStatus{},
+				diskStatuses, &aa, nil, swtpmCtrlSock, conf); err != nil {
+				t.Errorf("CreateDomConfig failed %v", err)
+			}
+			defer os.Truncate(conf.Name(), 0)
+
+			result, err := os.ReadFile(conf.Name())
+			if err != nil {
+				t.Errorf("reading conf file failed %v", err)
+			}
+
+			result = setStaticVsockCid(result)
+			if string(result) != tt.expected {
+				t.Errorf("got an unexpected resulting config %s", string(result))
+			}
+		})
 	}
 }
 
 func TestCreateDomConfigAmd64Legacy(t *testing.T) {
 	t.Parallel()
 
-	conf, err := os.CreateTemp("/tmp", "config")
-	if err != nil {
-		t.Errorf("Can't create config file for a domain %v", err)
-	}
-	defer os.Remove(conf.Name())
-	diskCondigsLegacy, diskStatusesLegacy := qemuDisksLegacy()
-	config, aa := domainConfigAndAssignableAdapters(diskCondigsLegacy)
-	config.VirtualizationMode = types.LEGACY
-	if err := kvmIntel.CreateDomConfig(DefaultDomainName, config, types.DomainStatus{},
-		diskStatusesLegacy, &aa, nil, swtpmCtrlSock, conf); err != nil {
-		t.Errorf("CreateDomConfig failed %v", err)
-	}
-	defer os.Truncate(conf.Name(), 0)
-
-	result, err := os.ReadFile(conf.Name())
-	if err != nil {
-		t.Errorf("reading conf file failed %v", err)
+	tests := []struct {
+		name      string
+		hugepages bool
+		expected  string
+	}{
+		{"with hugepages", true, domConfigAmd64Legacy(true)},
+		{"without hugepages", false, domConfigAmd64Legacy(false)},
 	}
 
-	result = setStaticVsockCid(result)
-	if string(result) != domConfigAmd64Legacy() {
-		t.Errorf("got an unexpected resulting config %s", string(result))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			conf, err := os.CreateTemp("/tmp", "config")
+			if err != nil {
+				t.Errorf("Can't create config file for a domain %v", err)
+			}
+			defer os.Remove(conf.Name())
+			diskCondigsLegacy, diskStatusesLegacy := qemuDisksLegacy()
+			config, aa := domainConfigAndAssignableAdapters(diskCondigsLegacy)
+			config.VirtualizationMode = types.LEGACY
+
+			// Create a local KvmContext with the desired hugepages setting
+			localKvm := kvmIntel
+			localKvm.hugePagesAvailable = tt.hugepages
+
+			if err := localKvm.CreateDomConfig(DefaultDomainName, config, types.DomainStatus{},
+				diskStatusesLegacy, &aa, nil, swtpmCtrlSock, conf); err != nil {
+				t.Errorf("CreateDomConfig failed %v", err)
+			}
+			defer os.Truncate(conf.Name(), 0)
+
+			result, err := os.ReadFile(conf.Name())
+			if err != nil {
+				t.Errorf("reading conf file failed %v", err)
+			}
+
+			result = setStaticVsockCid(result)
+			if string(result) != tt.expected {
+				t.Errorf("got an unexpected resulting config %s", string(result))
+			}
+		})
 	}
 }
 func TestCreateDomConfigAmd64Fml(t *testing.T) {
 	t.Parallel()
 
-	conf, err := os.CreateTemp("/tmp", "config")
-	if err != nil {
-		t.Errorf("Can't create config file for a domain %v", err)
-	}
-	defer os.Remove(conf.Name())
-	diskConfigs, diskStatuses := qemuDisks()
-	config, aa := domainConfigAndAssignableAdapters(diskConfigs)
-	config.VirtualizationMode = types.FML
-	config.BootLoader = "/usr/lib/xen/boot/OVMF_CODE.fd"
-	addNonExistingAdapter(&config, &aa)
-	if err := kvmIntel.CreateDomConfig(DefaultDomainName, config, types.DomainStatus{},
-		diskStatuses, &aa, nil, swtpmCtrlSock, conf); err != nil {
-		t.Errorf("CreateDomConfig failed %v", err)
-	}
-	aa.IoBundleList = aa.IoBundleList[:len(aa.IoBundleList)-1]
-	config.IoAdapterList = config.IoAdapterList[:len(config.IoAdapterList)-1]
-	defer os.Truncate(conf.Name(), 0)
-
-	result, err := os.ReadFile(conf.Name())
-	if err != nil {
-		t.Errorf("reading conf file failed %v", err)
+	tests := []struct {
+		name      string
+		hugepages bool
+		expected  string
+	}{
+		{"with hugepages", true, domConfigAmd64FML(true)},
+		{"without hugepages", false, domConfigAmd64FML(false)},
 	}
 
-	result = setStaticVsockCid(result)
-	if string(result) != domConfigAmd64FML() {
-		t.Errorf("got an unexpected resulting config %s", cmp.Diff(string(result), domConfigAmd64FML()))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			conf, err := os.CreateTemp("/tmp", "config")
+			if err != nil {
+				t.Errorf("Can't create config file for a domain %v", err)
+			}
+			defer os.Remove(conf.Name())
+			diskConfigs, diskStatuses := qemuDisks()
+			config, aa := domainConfigAndAssignableAdapters(diskConfigs)
+			config.VirtualizationMode = types.FML
+			config.BootLoader = "/usr/lib/xen/boot/OVMF_CODE.fd"
+			addNonExistingAdapter(&config, &aa)
+
+			// Create a local KvmContext with the desired hugepages setting
+			localKvm := kvmIntel
+			localKvm.hugePagesAvailable = tt.hugepages
+
+			if err := localKvm.CreateDomConfig(DefaultDomainName, config, types.DomainStatus{},
+				diskStatuses, &aa, nil, swtpmCtrlSock, conf); err != nil {
+				t.Errorf("CreateDomConfig failed %v", err)
+			}
+			aa.IoBundleList = aa.IoBundleList[:len(aa.IoBundleList)-1]
+			config.IoAdapterList = config.IoAdapterList[:len(config.IoAdapterList)-1]
+			defer os.Truncate(conf.Name(), 0)
+
+			result, err := os.ReadFile(conf.Name())
+			if err != nil {
+				t.Errorf("reading conf file failed %v", err)
+			}
+
+			result = setStaticVsockCid(result)
+			if string(result) != tt.expected {
+				t.Errorf("got an unexpected resulting config %s", cmp.Diff(string(result), tt.expected))
+			}
+		})
 	}
 }
 
 func TestCreateDomConfigArm64(t *testing.T) {
 	t.Parallel()
 
-	conf, err := os.CreateTemp("/tmp", "config")
-	if err != nil {
-		t.Errorf("Can't create config file for a domain %v", err)
-	}
-	defer os.Remove(conf.Name())
-
-	diskConfigs, diskStatuses := qemuDisks()
-	config, aa := domainConfigAndAssignableAdapters(diskConfigs)
-	config.VirtualizationMode = types.HVM
-	config.BootLoader = "/usr/lib/xen/boot/ovmf.bin"
-	if err := kvmArm.CreateDomConfig(DefaultDomainName, config, types.DomainStatus{},
-		diskStatuses, &aa, nil, swtpmCtrlSock, conf); err != nil {
-		t.Errorf("CreateDomConfig failed %v", err)
-	}
-	defer os.Truncate(conf.Name(), 0)
-
-	result, err := os.ReadFile(conf.Name())
-	if err != nil {
-		t.Errorf("reading conf file failed %v", err)
+	tests := []struct {
+		name      string
+		hugepages bool
+		expected  string
+	}{
+		{"with hugepages", true, domConfigArm64(true)},
+		{"without hugepages", false, domConfigArm64(false)},
 	}
 
-	result = setStaticVsockCid(result)
-	if string(result) != domConfigArm64() {
-		t.Errorf("got an unexpected resulting config %s", string(result))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			conf, err := os.CreateTemp("/tmp", "config")
+			if err != nil {
+				t.Errorf("Can't create config file for a domain %v", err)
+			}
+			defer os.Remove(conf.Name())
+
+			diskConfigs, diskStatuses := qemuDisks()
+			config, aa := domainConfigAndAssignableAdapters(diskConfigs)
+			config.VirtualizationMode = types.HVM
+			config.BootLoader = "/usr/lib/xen/boot/ovmf.bin"
+
+			// Create a local KvmContext with the desired hugepages setting
+			localKvm := kvmArm
+			localKvm.hugePagesAvailable = tt.hugepages
+
+			if err := localKvm.CreateDomConfig(DefaultDomainName, config, types.DomainStatus{},
+				diskStatuses, &aa, nil, swtpmCtrlSock, conf); err != nil {
+				t.Errorf("CreateDomConfig failed %v", err)
+			}
+			defer os.Truncate(conf.Name(), 0)
+
+			result, err := os.ReadFile(conf.Name())
+			if err != nil {
+				t.Errorf("reading conf file failed %v", err)
+			}
+
+			result = setStaticVsockCid(result)
+			if string(result) != tt.expected {
+				t.Errorf("got an unexpected resulting config %s", string(result))
+			}
+		})
 	}
 }
 
@@ -1150,7 +1230,11 @@ func qemuDisksLegacy() ([]types.DiskConfig, []types.DiskStatus) {
 	return dc, ds
 }
 
-func domConfigArm64() string {
+func domConfigArm64(hugepages bool) string {
+	hugepagesStr := ""
+	if hugepages {
+		hugepagesStr = "\n  hugepages = \"on\""
+	}
 	return fmt.Sprintf(`# This file is automatically generated by domainmgr
 [msg]
   timestamp = "on"
@@ -1190,7 +1274,7 @@ func domConfigArm64() string {
   mode = "control"
 
 [memory]
-  size = "10240"
+  size = "10240"%s
 
 [smp-opts]
   cpus = "2"
@@ -1413,10 +1497,14 @@ func domConfigArm64() string {
   driver = "vhost-vsock-pci"
   disable-legacy = "on"
   guest-cid = "3"
-`, DefaultDomainName, DefaultDomainName, DefaultDomainName)
+`, DefaultDomainName, DefaultDomainName, hugepagesStr, DefaultDomainName)
 }
 
-func domConfigAmd64FML() string {
+func domConfigAmd64FML(hugepages bool) string {
+	hugepagesStr := ""
+	if hugepages {
+		hugepagesStr = "\n  hugepages = \"on\""
+	}
 	return fmt.Sprintf(`# This file is automatically generated by domainmgr
 [msg]
   timestamp = "on"
@@ -1491,7 +1579,7 @@ func domConfigAmd64FML() string {
   mode = "control"
 
 [memory]
-  size = "10240"
+  size = "10240"%s
 
 [smp-opts]
   cpus = "2"
@@ -1726,10 +1814,14 @@ func domConfigAmd64FML() string {
   driver = "vhost-vsock-pci"
   disable-legacy = "on"
   guest-cid = "3"
-`, DefaultUUID, DefaultDomainName, DefaultDomainName, DefaultDomainName)
+`, DefaultUUID, DefaultDomainName, DefaultDomainName, hugepagesStr, DefaultDomainName)
 }
 
-func domConfigAmd64Legacy() string {
+func domConfigAmd64Legacy(hugepages bool) string {
+	hugepagesStr := ""
+	if hugepages {
+		hugepagesStr = "\n  hugepages = \"on\""
+	}
 	return fmt.Sprintf(`# This file is automatically generated by domainmgr
 [msg]
   timestamp = "on"
@@ -1791,7 +1883,7 @@ func domConfigAmd64Legacy() string {
   mode = "control"
 
 [memory]
-  size = "10240"
+  size = "10240"%s
 
 [smp-opts]
   cpus = "2"
@@ -2014,10 +2106,14 @@ func domConfigAmd64Legacy() string {
   driver = "vhost-vsock-pci"
   disable-legacy = "on"
   guest-cid = "3"
-`, DefaultDomainName, DefaultDomainName, DefaultDomainName)
+`, DefaultDomainName, DefaultDomainName, hugepagesStr, DefaultDomainName)
 }
 
-func domConfigAmd64() string {
+func domConfigAmd64(hugepages bool) string {
+	hugepagesStr := ""
+	if hugepages {
+		hugepagesStr = "\n  hugepages = \"on\""
+	}
 	return fmt.Sprintf(`# This file is automatically generated by domainmgr
 [msg]
   timestamp = "on"
@@ -2079,7 +2175,7 @@ func domConfigAmd64() string {
   mode = "control"
 
 [memory]
-  size = "10240"
+  size = "10240"%s
 
 [smp-opts]
   cpus = "2"
@@ -2300,10 +2396,14 @@ func domConfigAmd64() string {
   driver = "vhost-vsock-pci"
   disable-legacy = "on"
   guest-cid = "3"
-`, DefaultDomainName, DefaultDomainName, DefaultDomainName)
+`, DefaultDomainName, DefaultDomainName, hugepagesStr, DefaultDomainName)
 }
 
-func domConfigContainerVNC() string {
+func domConfigContainerVNC(hugepages bool) string {
+	hugepagesStr := ""
+	if hugepages {
+		hugepagesStr = "\n  hugepages = \"on\""
+	}
 	return fmt.Sprintf(`# This file is automatically generated by domainmgr
 [msg]
   timestamp = "on"
@@ -2365,7 +2465,7 @@ func domConfigContainerVNC() string {
   mode = "control"
 
 [memory]
-  size = "10240"
+  size = "10240"%s
 
 [smp-opts]
   cpus = "2"
@@ -2588,7 +2688,7 @@ func domConfigContainerVNC() string {
   driver = "vhost-vsock-pci"
   disable-legacy = "on"
   guest-cid = "3"
-`, DefaultDomainName, DefaultDomainName, DefaultDomainName, DefaultDomainName)
+`, DefaultDomainName, DefaultDomainName, hugepagesStr, DefaultDomainName, DefaultDomainName)
 }
 
 func TestCreateDom(t *testing.T) {
@@ -2740,35 +2840,53 @@ func TestCreateDom(t *testing.T) {
 func TestCreateDomConfigContainerVNC(t *testing.T) {
 	t.Parallel()
 
-	conf, err := os.CreateTemp("/tmp", "config")
-	if err != nil {
-		t.Errorf("Can't create config file for a domain %v", err)
-	}
-	defer os.Remove(conf.Name())
-
-	diskConfigs, diskStatuses := qemuDisks()
-	// remove the first disk, so that the container disk is the first one, resulting in IsOciContainer being true
-	diskConfigs = diskConfigs[1:]
-	diskStatuses = diskStatuses[1:]
-
-	config, aa := domainConfigAndAssignableAdapters(diskConfigs)
-	// enable VNC and VNC for shim VM
-	config.VmConfig.EnableVnc = true
-	config.VmConfig.EnableVncShimVM = true
-	if err := kvmIntel.CreateDomConfig(DefaultDomainName, config, types.DomainStatus{},
-		diskStatuses, &aa, nil, swtpmCtrlSock, conf); err != nil {
-		t.Errorf("CreateDomConfig failed %v", err)
-	}
-	defer os.Truncate(conf.Name(), 0)
-
-	result, err := os.ReadFile(conf.Name())
-	if err != nil {
-		t.Errorf("reading conf file failed %v", err)
+	tests := []struct {
+		name      string
+		hugepages bool
+		expected  string
+	}{
+		{"with hugepages", true, domConfigContainerVNC(true)},
+		{"without hugepages", false, domConfigContainerVNC(false)},
 	}
 
-	result = setStaticVsockCid(result)
-	if string(result) != domConfigContainerVNC() {
-		t.Errorf("got an unexpected resulting config %s", string(result))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			conf, err := os.CreateTemp("/tmp", "config")
+			if err != nil {
+				t.Errorf("Can't create config file for a domain %v", err)
+			}
+			defer os.Remove(conf.Name())
+
+			diskConfigs, diskStatuses := qemuDisks()
+			// remove the first disk, so that the container disk is the first one, resulting in IsOciContainer being true
+			diskConfigs = diskConfigs[1:]
+			diskStatuses = diskStatuses[1:]
+
+			config, aa := domainConfigAndAssignableAdapters(diskConfigs)
+			// enable VNC and VNC for shim VM
+			config.VmConfig.EnableVnc = true
+			config.VmConfig.EnableVncShimVM = true
+
+			// Create a local KvmContext with the desired hugepages setting
+			localKvm := kvmIntel
+			localKvm.hugePagesAvailable = tt.hugepages
+
+			if err := localKvm.CreateDomConfig(DefaultDomainName, config, types.DomainStatus{},
+				diskStatuses, &aa, nil, swtpmCtrlSock, conf); err != nil {
+				t.Errorf("CreateDomConfig failed %v", err)
+			}
+			defer os.Truncate(conf.Name(), 0)
+
+			result, err := os.ReadFile(conf.Name())
+			if err != nil {
+				t.Errorf("reading conf file failed %v", err)
+			}
+
+			result = setStaticVsockCid(result)
+			if string(result) != tt.expected {
+				t.Errorf("got an unexpected resulting config %s", string(result))
+			}
+		})
 	}
 }
 
@@ -3016,7 +3134,7 @@ func TestPCIAddressAllocator(t *testing.T) {
 	vnFiller := virtNetworkTemplateFiller{
 		file: &buffer,
 	}
-	err = vnFiller.do(virtualNetworks, types.HVM)
+	err = vnFiller.do(virtualNetworks, types.HVM, 1)
 	g.Expect(err).ToNot(HaveOccurred())
 	paFiller := pciAssignmentsTemplateFiller{
 		multifunctionDevices: multifunctionDevices,
@@ -3040,6 +3158,7 @@ func TestPCIAddressAllocator(t *testing.T) {
   script = "/etc/xen/scripts/qemu-ifup"
   downscript = "no"
   vhost = "on"
+  queues = "1"
 
 [device "net0"]
   driver = "virtio-net-pci"
@@ -3047,6 +3166,8 @@ func TestPCIAddressAllocator(t *testing.T) {
   mac = "02:16:3e:00:00:01"
   bus = "pci.5"
   addr = "0x0"
+  mq = "on"
+  vectors = "4"
   host_mtu = "1500"
 
 [device "pci.6"]
@@ -3064,6 +3185,7 @@ func TestPCIAddressAllocator(t *testing.T) {
   script = "/etc/xen/scripts/qemu-ifup"
   downscript = "no"
   vhost = "on"
+  queues = "1"
 
 [device "net1"]
   driver = "virtio-net-pci"
@@ -3071,6 +3193,8 @@ func TestPCIAddressAllocator(t *testing.T) {
   mac = "02:16:3e:00:00:02"
   bus = "pci.6"
   addr = "0x0"
+  mq = "on"
+  vectors = "4"
   host_mtu = "1500"
 
 [device "pci.7"]
@@ -3154,7 +3278,7 @@ func TestPCIAddressAllocator(t *testing.T) {
 
 	// Check generated config with the user-defined order.
 	buffer.Reset()
-	err = vnFiller.do(virtualNetworks, types.HVM)
+	err = vnFiller.do(virtualNetworks, types.HVM, 1)
 	g.Expect(err).ToNot(HaveOccurred())
 	err = paFiller.do(pciAssignments)
 	g.Expect(err).ToNot(HaveOccurred())
@@ -3174,6 +3298,7 @@ func TestPCIAddressAllocator(t *testing.T) {
   script = "/etc/xen/scripts/qemu-ifup"
   downscript = "no"
   vhost = "on"
+  queues = "1"
 
 [device "net0"]
   driver = "virtio-net-pci"
@@ -3181,6 +3306,8 @@ func TestPCIAddressAllocator(t *testing.T) {
   mac = "02:16:3e:00:00:01"
   bus = "pci.6"
   addr = "0x0"
+  mq = "on"
+  vectors = "4"
   host_mtu = "1500"
 
 [device "pci.8"]
@@ -3198,6 +3325,7 @@ func TestPCIAddressAllocator(t *testing.T) {
   script = "/etc/xen/scripts/qemu-ifup"
   downscript = "no"
   vhost = "on"
+  queues = "1"
 
 [device "net1"]
   driver = "virtio-net-pci"
@@ -3205,6 +3333,8 @@ func TestPCIAddressAllocator(t *testing.T) {
   mac = "02:16:3e:00:00:02"
   bus = "pci.8"
   addr = "0x0"
+  mq = "on"
+  vectors = "4"
   host_mtu = "1500"
 
 [device "pci.7"]
